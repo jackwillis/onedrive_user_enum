@@ -1023,7 +1023,7 @@ def main():
                     print(f"Reading in directory: {userfile}")
                 file_list = os.listdir(userfile)
                 i = 0
-                for currentfile in file_list:
+                for currentfile in sorted(file_list):
                     i+=1
                     try:
                         safe_file_name = currentfile.rstrip()   #take out any newlines that might exist
