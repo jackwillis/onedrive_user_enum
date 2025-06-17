@@ -646,7 +646,7 @@ def lookup_tenant(domain):
 
     try:
         r = requests.post(url, data=xml, headers=headers, timeout=8.0)
-        domain_extract = re.findall('<Domain>(.*?)<\/Domain>', r.content.decode('utf-8'))
+        domain_extract = re.findall('<Domain>(.*?)</Domain>', r.content.decode('utf-8'))
         tenant_extract = [i for i, x in enumerate(domain_extract) if ".onmicrosoft.com" in x and ".mail.onmicrosoft.com" not in x] # this line gets the matching list item numbers only
         if ( len(tenant_extract) > 0):
             print(f"\nTenants Identified:\n---------------------")
