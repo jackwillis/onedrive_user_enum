@@ -621,7 +621,11 @@ class UrlChecker:
 # ================================================================================
 
 def get_tenant_id(domain):
-    """Get Tenant ID using Office Apps Live endpoint (AADInternals)"""
+    """Get Tenant ID using Office Apps Live endpoint
+    
+    Based on AADInternals Get-TenantID function:
+    https://github.com/Gerenios/AADInternals/blob/master/AccessToken_utils.ps1
+    """
     global verbose
     try:
         url = f"https://odc.officeapps.live.com/odc/v2.1/federationprovider?domain={domain}"
@@ -644,7 +648,11 @@ def get_tenant_id(domain):
     return None
 
 def get_tenant_brand_name(domain):
-    """Get brand name using GetUserRealm endpoint (AADInternals)"""
+    """Get brand name using GetUserRealm endpoint
+    
+    Based on AADInternals Get-UserRealmV2 function:
+    https://github.com/Gerenios/AADInternals/blob/master/AccessToken_utils.ps1
+    """
     global verbose
     try:
         test_user = f"test@{domain}"
@@ -762,7 +770,11 @@ def test_tenant_patterns(patterns, domain):
     return verified or timeout_candidate
 
 def lookup_tenant_enhanced(domain):
-    """Try enhanced discovery using AADInternals methods"""
+    """Try enhanced discovery using AADInternals methods
+    
+    Implements tenant discovery based on @NestoriSyynimaa's AADInternals:
+    https://github.com/Gerenios/AADInternals
+    """
     global verbose
     
     # Get tenant info
