@@ -667,27 +667,27 @@ def get_tenant_brand_name(domain):
             print(f"DEBUG: GetUserRealm failed for {domain}: {e}")
     return None
 
-def resolve_tenant_hostname(hostname):
-    """Check if tenant hostname resolves via DNS"""
-    try:
-        socket.gethostbyname(hostname)
-        return True
-    except socket.gaierror:
-        return False
-
-def verify_sharepoint_access(url, timeout=5):
-    """Verify SharePoint/OneDrive access via HTTP status"""
-    try:
-        r = requests.head(url, timeout=timeout, allow_redirects=False)
-        return r.status_code if r.status_code in [403, 404, 401, 302] else None
-    except requests.exceptions.Timeout:
-        return 'timeout'
-    except Exception:
-        return None
-
 def verify_tenant_pattern(potential, domain):
     """Check if a potential tenant name is valid"""
     global verbose
+    
+    def resolve_tenant_hostname(hostname):
+        """Check if tenant hostname resolves via DNS"""
+        try:
+            socket.gethostbyname(hostname)
+            return True
+        except socket.gaierror:
+            return False
+    
+    def verify_sharepoint_access(url, timeout=5):
+        """Verify SharePoint/OneDrive access via HTTP status"""
+        try:
+            r = requests.head(url, timeout=timeout, allow_redirects=False)
+            return r.status_code if r.status_code in [403, 404, 401, 302] else None
+        except requests.exceptions.Timeout:
+            return 'timeout'
+        except Exception:
+            return None
     
     if verbose:
         print(f"DEBUG: Trying potential tenant name: {potential}")
