@@ -679,52 +679,45 @@ def verify_tenant_pattern(potential, domain):
     """Check if a potential tenant name is valid"""
     global verbose
     
-    def resolve_tenant_hostname(hostname):
-        """Check if tenant hostname resolves via DNS"""
-        try:
-            socket.gethostbyname(hostname)
-            return True
-        except socket.gaierror:
-            return False
-    
     def verify_sharepoint_access(url, timeout=5):
         """Verify SharePoint/OneDrive access via HTTP status"""
         try:
             r = requests.head(url, timeout=timeout, allow_redirects=False)
-            return r.status_code if r.status_code in [403, 404, 401, 302] else None
+            # These status codes indicate the tenant exists and recognizes the domain
+            if r.status_code in [403, 404, 401, 302]:
+                return 'verified'
+            return None
         except requests.exceptions.Timeout:
             return 'timeout'
+        except requests.exceptions.ConnectionError:
+            # DNS resolution failed or connection refused
+            return None
         except Exception:
             return None
     
     if verbose:
         print(f"DEBUG: Trying potential tenant name: {potential}")
     
-    # Check DNS
+    # Verify with HTTP (DNS check happens automatically)
     test_hostname = f'{potential}-my.sharepoint.com'
-    if not resolve_tenant_hostname(test_hostname):
-        if verbose:
-            print(f"DEBUG: {potential} doesn't resolve")
-        return None
-    
-    # Verify with HTTP
     test_url = f'https://{test_hostname}/personal/test_{domain.replace(".", "_")}/_layouts/15/onedrive.aspx'
-    status = verify_sharepoint_access(test_url)
+    result = verify_sharepoint_access(test_url)
     
-    if status == 'timeout':
-        if verbose:
-            print(f"DEBUG: {potential} timed out but DNS resolves")
-        return 'timeout'
-    elif status:
-        return 'verified'
-    elif verbose:
-        print(f"DEBUG: {potential} connection failed")
-    return None
+    if verbose:
+        if result == 'verified':
+            print(f"DEBUG: {potential} verified via HTTP status")
+        elif result == 'timeout':
+            print(f"DEBUG: {potential} timed out (likely exists)")
+        else:
+            print(f"DEBUG: {potential} failed (DNS or connection error)")
+    
+    return result
 
 def generate_tenant_patterns(domain, brand_name):
     """Generate potential tenant name patterns"""
     patterns = []
     
+    # Brand name cleaned (e.g., 'vmware.com' -> 'vmwareinc')
     if brand_name:
         brand_clean = ''.join(c for c in brand_name.lower() if c.isalnum())
         if brand_clean:
