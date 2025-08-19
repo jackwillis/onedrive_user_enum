@@ -717,18 +717,18 @@ def generate_tenant_patterns(domain, brand_name):
     """Generate potential tenant name patterns"""
     patterns = []
     
-    # Brand name cleaned (e.g., 'vmware.com' -> 'vmwareinc')
+    # Brand name cleaned (e.g., 'example.com' -> 'exampleinc')
     if brand_name:
         brand_clean = ''.join(c for c in brand_name.lower() if c.isalnum())
         if brand_clean:
             patterns.append(brand_clean)
     
-    # Full domain without dots (e.g., 'sprocketsecurity.com' -> 'sprocketsecuritycom')
+    # Full domain without dots (e.g., 'example.com' -> 'examplecom')
     domain_no_dots = ''.join(c for c in domain.lower() if c.isalnum())
     if domain_no_dots not in patterns:
         patterns.append(domain_no_dots)
     
-    # Domain prefix cleaned (e.g., '7-eleven.com' -> '7eleven')
+    # Domain prefix cleaned (e.g., 'ex-ample.com' -> 'example')
     domain_prefix = domain.split('.')[0].lower()
     domain_prefix_clean = ''.join(c for c in domain_prefix if c.isalnum())
     if domain_prefix_clean not in patterns:
@@ -738,12 +738,12 @@ def generate_tenant_patterns(domain, brand_name):
 
 def print_tenant_result(tenant_name, tenant_id, domain, method="AADInternals Pattern Matching"):
     """Print tenant discovery results"""
-    print(f"\nTenant Information:\n---------------------")
+    print(f"\nTenant Discovery Results:\n---------------------")
     if tenant_id:
         print(f"Tenant ID: {tenant_id}")
-    print(f"Tenant Name: {tenant_name}")
+    print(f"Tenant Name (discovered): {tenant_name}")
     print(f"Discovery Method: {method}")
-    print(f"\nOneDrive URL pattern:\n---------------------")
+    print(f"\nOneDrive URL to test:\n---------------------")
     print(f"https://{tenant_name}-my.sharepoint.com/personal/USER_{domain.replace('.', '_')}/")
     print(f"\n{'+'*106}\n")
 
@@ -782,6 +782,10 @@ def lookup_tenant_enhanced(domain):
     tenant_name = test_tenant_patterns(patterns, domain)
     
     if not tenant_name:
+        # We found tenant info but couldn't determine the actual tenant name
+        if verbose:
+            print(f"DEBUG: Found tenant info but no working pattern. TenantID: {tenant_id}, Brand: {brand_name}")
+            print(f"DEBUG: Patterns tested: {patterns}")
         return None
     
     # Determine method string
