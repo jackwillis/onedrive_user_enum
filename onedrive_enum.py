@@ -735,7 +735,7 @@ def generate_tenant_patterns(domain, brand_name):
     if domain_no_dots not in patterns:
         patterns.append(domain_no_dots)
     
-    # Domain prefix cleaned (e.g., 'procter-gamble.com' -> 'proctergamble')
+    # Domain prefix cleaned (e.g., '7-eleven.com' -> '7eleven')
     domain_prefix = domain.split('.')[0].lower()
     domain_prefix_clean = ''.join(c for c in domain_prefix if c.isalnum())
     if domain_prefix_clean not in patterns:
