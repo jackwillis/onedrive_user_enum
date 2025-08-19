@@ -616,167 +616,191 @@ class UrlChecker:
         self.userdata = tmp_untried_users
 
 # ================================================================================
-# Tenant discovery helper functions
-# Inspired by AADInternals PowerShell module by @NestoriSyynimaa
+# Enhanced tenant discovery based on AADInternals
 # https://github.com/Gerenios/AADInternals
 # ================================================================================
 
-def check_azure_openid_config(domain_or_tenant, is_tenant=False):
-    """Check if domain/tenant exists in Azure AD using OpenID configuration
-    
-    See AADInternals `Get-TenantID` function
-    
-    Note: Verifies tenant NAME exists, not domain ownership. A tenant name 
-    may exist without the domain actually using Office 365.
-    
-    Args:
-        domain_or_tenant: Either a domain (example.com) or tenant name (example)
-        is_tenant: If True, appends .onmicrosoft.com to the input
-    
-    Returns:
-        bool: True if the domain/tenant exists in Azure AD
-    """
+def get_tenant_id(domain):
+    """Get Tenant ID using Office Apps Live endpoint (AADInternals)"""
+    global verbose
+    try:
+        url = f"https://odc.officeapps.live.com/odc/v2.1/federationprovider?domain={domain}"
+        headers = {'User-Agent': 'AutodiscoverClient'}
+        
+        if verbose:
+            print(f"DEBUG: Checking tenant ID for {domain} via Office Apps Live")
+        
+        response = requests.get(url, headers=headers, timeout=8.0)
+        if response.status_code != 200:
+            return None
+            
+        tenant_id = response.json().get('tenantId')
+        if tenant_id and verbose:
+            print(f"INFO: Found tenant ID for {domain}: {tenant_id}")
+        return tenant_id
+    except Exception as e:
+        if verbose:
+            print(f"DEBUG: Failed to get tenant ID for {domain}: {e}")
+    return None
+
+def get_tenant_brand_name(domain):
+    """Get brand name using GetUserRealm endpoint (AADInternals)"""
+    global verbose
+    try:
+        test_user = f"test@{domain}"
+        url = f"https://login.microsoftonline.com/GetUserRealm.srf?login={test_user}"
+        headers = {'User-Agent': 'AutodiscoverClient'}
+        
+        if verbose:
+            print(f"DEBUG: Getting tenant brand name for {domain} via GetUserRealm")
+        
+        response = requests.get(url, headers=headers, timeout=8.0)
+        if response.status_code != 200:
+            return None
+            
+        brand_name = response.json().get('FederationBrandName')
+        if brand_name and verbose:
+            print(f"INFO: Found FederationBrandName for {domain}: {brand_name}")
+        return brand_name
+    except Exception as e:
+        if verbose:
+            print(f"DEBUG: GetUserRealm failed for {domain}: {e}")
+    return None
+
+def resolve_tenant_hostname(hostname):
+    """Check if tenant hostname resolves via DNS"""
+    try:
+        socket.gethostbyname(hostname)
+        return True
+    except socket.gaierror:
+        return False
+
+def verify_sharepoint_access(url, timeout=5):
+    """Verify SharePoint/OneDrive access via HTTP status"""
+    try:
+        r = requests.head(url, timeout=timeout, allow_redirects=False)
+        return r.status_code if r.status_code in [403, 404, 401, 302] else None
+    except requests.exceptions.Timeout:
+        return 'timeout'
+    except Exception:
+        return None
+
+def verify_tenant_pattern(potential, domain):
+    """Check if a potential tenant name is valid"""
     global verbose
     
-    if is_tenant:
-        test_domain = f"{domain_or_tenant}.onmicrosoft.com"
-    else:
-        test_domain = domain_or_tenant
+    if verbose:
+        print(f"DEBUG: Trying potential tenant name: {potential}")
     
-    try:
-        openid_url = f"https://login.microsoftonline.com/{test_domain}/.well-known/openid-configuration"
-        headers = {'User-Agent': 'AutodiscoverClient'}
-        r = requests.get(openid_url, timeout=8.0, headers=headers)
-        if r.status_code == 200:
-            if verbose:
-                if is_tenant:
-                    print(f"INFO: Found tenant via .onmicrosoft.com domain: {domain_or_tenant}")
-                else:
-                    print(f"INFO: Domain {domain_or_tenant} confirmed in Azure AD via OpenID")
-            return True
-    except requests.exceptions.RequestException as e:
+    # Check DNS
+    test_hostname = f'{potential}-my.sharepoint.com'
+    if not resolve_tenant_hostname(test_hostname):
         if verbose:
-            print(f"DEBUG: OpenID check failed for {test_domain}: {e}")
-    return False
+            print(f"DEBUG: {potential} doesn't resolve")
+        return None
+    
+    # Verify with HTTP
+    test_url = f'https://{test_hostname}/personal/test_{domain.replace(".", "_")}/_layouts/15/onedrive.aspx'
+    status = verify_sharepoint_access(test_url)
+    
+    if status == 'timeout':
+        if verbose:
+            print(f"DEBUG: {potential} timed out but DNS resolves")
+        return 'timeout'
+    elif status:
+        return 'verified'
+    elif verbose:
+        print(f"DEBUG: {potential} connection failed")
+    return None
 
-def check_onmicrosoft_domain(base_name):
-    """Check if .onmicrosoft.com domain exists for the given base name"""
-    return check_azure_openid_config(base_name, is_tenant=True)
+def generate_tenant_patterns(domain, brand_name):
+    """Generate potential tenant name patterns"""
+    patterns = []
+    
+    if brand_name:
+        brand_clean = ''.join(c for c in brand_name.lower() if c.isalnum())
+        if brand_clean:
+            patterns.append(brand_clean)
+    
+    # Full domain without dots (e.g., 'sprocketsecurity.com' -> 'sprocketsecuritycom')
+    domain_no_dots = ''.join(c for c in domain.lower() if c.isalnum())
+    if domain_no_dots not in patterns:
+        patterns.append(domain_no_dots)
+    
+    # Domain prefix cleaned (e.g., 'procter-gamble.com' -> 'proctergamble')
+    domain_prefix = domain.split('.')[0].lower()
+    domain_prefix_clean = ''.join(c for c in domain_prefix if c.isalnum())
+    if domain_prefix_clean not in patterns:
+        patterns.append(domain_prefix_clean)
+    
+    return patterns
 
+def print_tenant_result(tenant_name, tenant_id, domain, method="AADInternals Pattern Matching"):
+    """Print tenant discovery results"""
+    print(f"\nTenant Information:\n---------------------")
+    if tenant_id:
+        print(f"Tenant ID: {tenant_id}")
+    print(f"Tenant Name: {tenant_name}")
+    print(f"Discovery Method: {method}")
+    print(f"\nOneDrive URL pattern:\n---------------------")
+    print(f"https://{tenant_name}-my.sharepoint.com/personal/USER_{domain.replace('.', '_')}/")
+    print(f"\n{'+'*106}\n")
+
+def test_tenant_patterns(patterns, domain):
+    """Test a list of tenant patterns and return the best match"""
+    verified = None
+    timeout_candidate = None
+    
+    for potential in patterns:
+        result = verify_tenant_pattern(potential, domain)
+        if result == 'verified':
+            verified = potential
+            break
+        elif result == 'timeout' and not timeout_candidate:
+            timeout_candidate = potential
+    
+    return verified or timeout_candidate
+
+def lookup_tenant_enhanced(domain):
+    """Try enhanced discovery using AADInternals methods"""
+    global verbose
+    
+    # Get tenant info
+    tenant_id = get_tenant_id(domain)
+    brand_name = get_tenant_brand_name(domain)
+    
+    if not (brand_name or tenant_id):
+        return None
+    
+    # Generate and test patterns
+    patterns = generate_tenant_patterns(domain, brand_name)
+    tenant_name = test_tenant_patterns(patterns, domain)
+    
+    if not tenant_name:
+        return None
+    
+    # Determine method string
+    method = "AADInternals Pattern Matching"
+    if verify_tenant_pattern(tenant_name, domain) == 'timeout':
+        method += " (DNS verified)"
+    
+    print_tenant_result(tenant_name, tenant_id, domain, method)
+    return tenant_name
 
 # look up tenant if it's missing
 def lookup_tenant(domain):
-    """Main tenant discovery function - tries multiple methods
-    
-    Discovery methods (in order):
-    1. Exchange Autodiscover (AADInternals Get-TenantDomains) - now mostly broken
-    2. Direct .onmicrosoft.com check via OpenID config (AADInternals Get-TenantID)
-    3. Alphanumeric transformation for special characters
-    
-    Args:
-        domain: The domain to look up (e.g., 'example.com')
-    
-    Returns:
-        str or None: The tenant name if found, None otherwise
-    """
-    global verbose
-    
-    # Input validation
-    if not domain or not isinstance(domain, str):
-        print("ERROR: Invalid domain provided")
-        exit()
-    
-    tenantname = None
-    discovery_strategy = "Not Found"
-    
-    # Method 1: Try autodiscovery first (original method)
+    # Try enhanced discovery first
     if verbose:
-        print(f"INFO: Attempting tenant discovery for {domain}")
+        print(f"INFO: Attempting enhanced tenant discovery for {domain}...")
     
-    tenantname = lookup_tenant_autodiscovery(domain)
-    if tenantname:
-        discovery_strategy = "Exchange Autodiscover"
-    else:
-        # If autodiscovery failed, try alternative methods
-        if verbose:
-            print("INFO: Autodiscover failed. Trying alternative discovery methods...")
-        
-        # Safe domain parsing
-        base_name = domain.split('.')[0] if '.' in domain else domain
-        
-        # Check if domain exists in Azure AD (informational only)
-        if verbose and check_azure_openid_config(domain):
-            print(f"INFO: Domain {domain} found in Azure AD")
-        
-        # Method 2: Check if .onmicrosoft.com domain exists for base pattern
-        # This is the most reliable method for confirming tenant names
-        if check_onmicrosoft_domain(base_name):
-            tenantname = base_name
-            discovery_strategy = "Direct Match"
-        else:
-            # Method 3: Try alphanumeric version (removes hyphens and special chars)
-            # Based on real-world testing of 200+ organizations:
-            # - 94% use original domain name
-            # - 6% need alphanumeric conversion (e.g., coca-cola -> cocacola)
-            alphanumeric_only = ''.join(c for c in base_name if c.isalnum())
-            if alphanumeric_only != base_name and check_onmicrosoft_domain(alphanumeric_only):
-                tenantname = alphanumeric_only
-                discovery_strategy = "Special Characters Removed"
-            
-            # Try removing dots from full domain
-            # Some organizations use their full domain without dots as the tenant name
-            if '.' in domain:
-                domain_no_dots = ''.join(c for c in domain if c.isalnum())
-                if check_onmicrosoft_domain(domain_no_dots):
-                    tenantname = domain_no_dots
-                    discovery_strategy = "Full Domain (Dots Removed)"
-
-    # Process results
-    if tenantname:
-        print(f"\nTenant Name Found (via {discovery_strategy}):\n---------------------")
-        print(f"{tenantname}")
-        print(f"\nOneDrive URL pattern:\n---------------------")
-        print(f"{tenantname}-my.sharepoint.com")
-        print(f"\nNote: Tenant name exists but may not belong to {domain}")
-        print(f"\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n")
-        return tenantname
+    tenant = lookup_tenant_enhanced(domain)
+    if tenant:
+        return tenant
     
-    else:
-        # No tenant found - provide helpful guidance
-        print(f"\nCould not automatically determine tenant name for {domain}")
-        print(f"\nPossible reasons:")
-        print(f"  1. Domain doesn't use Office 365/Azure AD")
-        print(f"  2. Tenant uses non-standard naming (not based on domain)")
-        print(f"  3. Network timeout or connection issues\n")
-        print(f"To verify if domain uses Office 365:")
-        print(f"  - Check MX records: dig MX {domain}")
-        print(f"  - Look for: *.protection.outlook.com")
-        print(f"  - Note: Email gateways (Proofpoint, Mimecast) may hide Office 365 usage\n")
-        print(f"If domain DOES use Office 365, discover tenant name via:")
-        print(f"  - Email headers (Return-Path/Authentication-Results show .onmicrosoft.com)")
-        print(f"\nOnce you know the tenant name, use:")
-        print(f"  ./onedrive_enum.py -d {domain} -t [tenant_name] -U [wordlist]")
-        print("\nExiting.")
-        exit()
+    # Fall back to legacy autodiscovery method
+    return lookup_tenant_autodiscovery(domain)
 
-
-# look up tenant using autodiscovery (original method)
 def lookup_tenant_autodiscovery(domain):
-    """Look up tenant using Exchange autodiscovery
-    
-    See AADInternals `Get-TenantDomains` function (AccessToken_utils.ps1)
-    
-    Note: This method no longer works reliably as Microsoft has disabled
-    the autodiscover endpoint for tenant enumeration.
-    
-    Args:
-        domain: The domain to look up
-    
-    Returns:
-        str or None: The tenant name if found, None otherwise
-    """
-    global verbose
-    
     #identify primary tenant(s)
     # will always display list of alternate tenants
     # this will pick one based on mail.onmicrosoft.com record, or failing that, matching domain that was given.
@@ -813,9 +837,8 @@ def lookup_tenant_autodiscovery(domain):
                 tenant_list.append(cleaned_tenant)
             print("")
         else:
-            if verbose:
-                print("INFO: No tenants found via autodiscover.")
-            return None
+            print("No tenants found. Exiting.")
+            exit()
 
         mail_extract = [i for i, x in enumerate(domain_extract) if ".mail.onmicrosoft.com" in x] # this line gets the matching list item numbers only
         if ( len(mail_extract) > 0):
@@ -862,21 +885,18 @@ def lookup_tenant_autodiscovery(domain):
             return tenantname
 
         else:
-            if verbose:
-                print(f"INFO: No OneDrive detected via autodiscover.")
-            return None
+            print(f"ERROR: NO ONEDRIVE DETECTED!")
+            exit()
     except requests.exceptions.HTTPError as errh:
         print ("Http Error:",errh)
-        return None
     except requests.exceptions.ConnectionError as errc:
         print ("Error Connecting:",errc)
-        return None
     except requests.exceptions.Timeout as errt:
         print ("Timeout Error:",errt)
-        return None
     except requests.exceptions.RequestException as err:
         print ("OOps: Something Else",err)
-        return None
+    
+    return None
 
 # handle ctrl-c with log file
 # stole from https://stackoverflow.com/questions/1112343/how-do-i-capture-sigint-in-python
