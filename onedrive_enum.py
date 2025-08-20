@@ -637,14 +637,21 @@ class TenantDiscovery:
     
     # Public API
     
-    def discover_tenant(self, domain):
+    def discover_tenant(self, domain, tenant_id=None, brand_name=None):
         """Discover the Azure AD tenant name for a domain.
+        
+        Args:
+            domain: The domain to discover tenant for
+            tenant_id: Optional pre-fetched tenant ID (will lookup if not provided)
+            brand_name: Optional pre-fetched brand name (will lookup if not provided)
         
         Returns: (tenant_name, status) or (None, None) if not found
         """
-        # Get tenant info from Azure endpoints
-        tenant_id = get_tenant_id(domain)
-        brand_name = get_tenant_brand_name(domain)
+        # Get tenant info from Azure endpoints if not provided
+        if tenant_id is None:
+            tenant_id = get_tenant_id(domain)
+        if brand_name is None:
+            brand_name = get_tenant_brand_name(domain)
         
         if not (brand_name or tenant_id):
             return (None, None)
@@ -853,21 +860,27 @@ def lookup_tenant(domain):
     if verbose:
         print(f"INFO: Attempting tenant discovery for {domain}...")
     
-    # Try to guess the tenant name
-    discovery = TenantDiscovery(verbose=verbose, endpoint=endpoint)
-    tenant_name, status = discovery.discover_tenant(domain)
+    # Get tenant information upfront
+    tenant_id = get_tenant_id(domain)
+    brand_name = get_tenant_brand_name(domain)
     
-    if not tenant_name:
-        if verbose:
-            tenant_id = get_tenant_id(domain)
-            brand_name = get_tenant_brand_name(domain)
-            if tenant_id or brand_name:
-                print(f"DEBUG: Found tenant info but no working pattern. TenantID: {tenant_id}, Brand: {brand_name}")
-        print("No tenants found. Exiting.")
+    # If no Azure AD presence, exit early
+    if not (tenant_id or brand_name):
+        print(f"No Azure AD tenant found for {domain}")
         exit()
     
-    # Get tenant ID for display (we know it exists since discovery succeeded)
-    tenant_id = get_tenant_id(domain)
+    # Try to discover the tenant name pattern
+    discovery = TenantDiscovery(verbose=verbose, endpoint=endpoint)
+    tenant_name, status = discovery.discover_tenant(domain, tenant_id=tenant_id, brand_name=brand_name)
+    
+    if not tenant_name:
+        print(f"\nAzure AD tenant detected but pattern discovery failed")
+        if tenant_id:
+            print(f"Tenant ID: {tenant_id}")
+        if brand_name:
+            print(f"Brand Name: {brand_name}")
+        print("\nUnable to determine SharePoint URL pattern. Manual verification required.")
+        exit()
     
     # Determine method string based on status
     method = "Pattern Matching"
