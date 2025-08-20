@@ -618,9 +618,9 @@ class UrlChecker:
 # Tenant Discovery - Based on AADInternals by @NestoriSyynimaa
 
 class TenantDiscovery:
-    """Discovers Azure AD tenant names by testing SharePoint URL patterns"""
+    """Discover Azure AD tenant names via SharePoint URL pattern testing."""
     
-    # Status constants for tenant verification
+    # Status constants
     VERIFIED = 'verified'          # HTTP 403/404/401/302 confirmed
     TIMEOUT = 'timeout'            # DNS exists but slow/timeout
     DNS_FAIL = 'dns_fail'          # DNS doesn't resolve
@@ -630,30 +630,38 @@ class TenantDiscovery:
     def __init__(self, verbose=False):
         self.verbose = verbose
     
+    # Public API
+    
+    def find_tenant(self, domain):
+        """Find the Azure AD tenant name for a domain."""
+        tenant_name, _ = self.discover_tenant(domain)
+        return tenant_name
+    
     def discover_tenant(self, domain):
-        """Main API: Discover the tenant name for a domain
-        
-        Returns tuple: (tenant_name, status, confidence) or (None, None, 0.0) if not found
-        """
+        """Discover tenant name with status. Returns (tenant_name, status) or (None, None)."""
         # Get tenant info from Azure endpoints
         tenant_id = get_tenant_id(domain)
         brand_name = get_tenant_brand_name(domain)
         
         if not (brand_name or tenant_id):
-            return (None, None, 0.0)
+            return (None, None)
         
         # Generate and test patterns
         patterns = self.generate_patterns(domain, brand_name)
-        results = self.test_all_patterns(patterns, domain)
+        result = self.test_all_patterns(patterns, domain)
         
-        if results and results[0][2] > 0:
-            # Return (tenant_name, status, confidence)
-            return results[0]
-        
-        return (None, None, 0.0)
+        return result[0] if result else (None, None)
+    
+    def build_sharepoint_url(self, tenant_name, domain):
+        """Build the SharePoint/OneDrive URL for a tenant."""
+        hostname = f'{tenant_name}-my.sharepoint.com'
+        domain_part = domain.replace('.', '_')
+        return f'https://{hostname}/personal/USER_{domain_part}/'
+    
+    # Internal Methods
     
     def generate_patterns(self, domain, brand_name=None):
-        """Generate potential tenant name patterns in priority order"""
+        """Generate potential tenant name patterns in priority order."""
         patterns = []
         
         def clean_text(text):
@@ -695,70 +703,92 @@ class TenantDiscovery:
         
         return patterns
     
-    def verify_sharepoint_url(self, url, timeout=8):
-        """Check SharePoint URL and return status/confidence"""
-        try:
-            r = requests.head(url, timeout=timeout, allow_redirects=False)
-            # These status codes indicate the tenant exists
-            if r.status_code in [403, 404, 401, 302]:
-                return (self.VERIFIED, 1.0)
-            return (self.NO_SHAREPOINT, 0.0)
-        except requests.exceptions.Timeout:
-            return (self.TIMEOUT, 0.0)  # Timeout = no confidence
-        except requests.exceptions.ConnectionError as e:
-            error_str = str(e).lower()
-            if 'name or service not known' in error_str or 'nodename nor servname' in error_str:
-                return (self.DNS_FAIL, 0.0)
-            return (self.ERROR, 0.0)
-        except Exception:
-            return (self.ERROR, 0.0)
+    def test_all_patterns(self, patterns, domain):
+        """Test all patterns and return first verified match."""
+        # First pass: test all patterns with standard timeout
+        timeout_patterns = []
+        
+        for pattern in patterns:
+            status = self.verify_pattern(pattern, domain)
+            
+            if status == self.VERIFIED:
+                # Found a verified match, return immediately
+                if self.verbose:
+                    print(f"DEBUG: Found verified match: {pattern}")
+                return [(pattern, status)]
+            elif status == self.TIMEOUT:
+                # Save for potential retry
+                timeout_patterns.append(pattern)
+                if self.verbose:
+                    print(f"DEBUG: {pattern} timed out (will retry if no verified match)")
+        
+        # Second pass: retry timeouts with longer timeout
+        if timeout_patterns:
+            return self._retry_timeout_patterns(timeout_patterns, domain)
+        
+        # No verified match found
+        if self.verbose:
+            print(f"DEBUG: No verified pattern found for {domain}")
+        return []
     
-    def verify_pattern(self, pattern, domain):
-        """Verify a single pattern and return status/confidence"""
+    def verify_pattern(self, pattern, domain, timeout=8):
+        """Verify a single pattern and return status."""
         if self.verbose:
             print(f"DEBUG: Testing pattern: {pattern}")
         
-        # Build SharePoint URL
-        test_hostname = f'{pattern}-my.sharepoint.com'
-        test_url = f'https://{test_hostname}/personal/test_{domain.replace(".", "_")}/_layouts/15/onedrive.aspx'
-        
-        # Test with standard timeout
-        status, confidence = self.verify_sharepoint_url(test_url, timeout=8)
+        test_url = self._build_test_url(pattern, domain)
+        status = self._check_url(test_url, timeout=timeout)
         
         # Log result
         if self.verbose:
             if status == self.VERIFIED:
-                print(f"DEBUG: {pattern} verified (confidence: {confidence})")
+                print(f"DEBUG: {pattern} verified")
             elif status == self.TIMEOUT:
-                print(f"DEBUG: {pattern} timeout (confidence: {confidence})")
+                print(f"DEBUG: {pattern} timeout")
             else:
                 print(f"DEBUG: {pattern} failed ({status})")
         
-        return (status, confidence)
+        return status
     
-    def test_all_patterns(self, patterns, domain):
-        """Test all patterns and return best match with details"""
-        results = []
+    def _build_test_url(self, pattern, domain):
+        """Build SharePoint URL for testing a pattern."""
+        hostname = f'{pattern}-my.sharepoint.com'
+        domain_part = domain.replace('.', '_')
+        return f'https://{hostname}/personal/test_{domain_part}/_layouts/15/onedrive.aspx'
+    
+    def _retry_timeout_patterns(self, patterns, domain, timeout=15):
+        """Retry patterns that timed out with a longer timeout."""
+        if self.verbose:
+            print(f"DEBUG: No verified match, retrying {len(patterns)} timeout(s) with {timeout}s timeout...")
         
-        # Test each pattern
         for pattern in patterns:
-            status, confidence = self.verify_pattern(pattern, domain)
-            results.append((pattern, status, confidence))
-            
-            # Early exit on verified match (optimization)
+            status = self.verify_pattern(pattern, domain, timeout=timeout)
             if status == self.VERIFIED:
                 if self.verbose:
-                    print(f"DEBUG: Found verified match: {pattern}, skipping remaining patterns")
-                break
+                    print(f"DEBUG: Retry successful - {pattern} verified!")
+                return [(pattern, status)]
+            elif self.verbose:
+                print(f"DEBUG: Retry for {pattern}: {status}")
         
-        # Sort by confidence
-        results.sort(key=lambda x: x[2], reverse=True)
-        
-        if self.verbose and results:
-            best = results[0]
-            print(f"DEBUG: Best match: {best[0]} (status: {best[1]}, confidence: {best[2]})")
-        
-        return results
+        return []
+    
+    def _check_url(self, url, timeout=8):
+        """Check if a SharePoint URL exists and return status."""
+        try:
+            r = requests.head(url, timeout=timeout, allow_redirects=False)
+            # These status codes indicate the tenant exists
+            if r.status_code in [403, 404, 401, 302]:
+                return self.VERIFIED
+            return self.NO_SHAREPOINT
+        except requests.exceptions.Timeout:
+            return self.TIMEOUT
+        except requests.exceptions.ConnectionError as e:
+            error_str = str(e).lower()
+            if 'name or service not known' in error_str or 'nodename nor servname' in error_str:
+                return self.DNS_FAIL
+            return self.ERROR
+        except Exception:
+            return self.ERROR
 
 def get_tenant_id(domain):
     """Get Tenant ID using Office Apps Live endpoint
@@ -816,27 +846,24 @@ def get_tenant_brand_name(domain):
     return None
 
 
-def print_tenant_result(tenant_name, tenant_id, domain, method="AADInternals Pattern Matching", confidence=None):
+def print_tenant_result(tenant_name, tenant_id, domain, method="AADInternals Pattern Matching"):
     """Print tenant discovery results"""
     print(f"\nTenant Discovery Results:\n---------------------")
     if tenant_id:
         print(f"Tenant ID: {tenant_id}")
     print(f"Tenant Name (discovered): {tenant_name}")
-    if confidence is not None:
-        confidence_pct = int(confidence * 100)
-        print(f"Confidence: {confidence_pct}%")
     print(f"Discovery Method: {method}")
     print(f"\nOneDrive URL to test:\n---------------------")
     print(f"https://{tenant_name}-my.sharepoint.com/personal/USER_{domain.replace('.', '_')}/")
     print(f"\n{'+'*106}\n")
 
-def lookup_tenant_enhanced(domain):
-    """Try enhanced discovery using AADInternals methods"""
+def lookup_tenant_by_pattern(domain):
+    """Try to guess tenant name using pattern matching."""
     global verbose
     
-    # Use the improved TenantDiscovery API
+    # Try to guess the tenant name
     discovery = TenantDiscovery(verbose=verbose)
-    tenant_name, status, confidence = discovery.discover_tenant(domain)
+    tenant_name, status = discovery.discover_tenant(domain)
     
     if not tenant_name:
         if verbose:
@@ -850,26 +877,28 @@ def lookup_tenant_enhanced(domain):
     tenant_id = get_tenant_id(domain)
     
     # Determine method string based on status
-    method = "AADInternals Pattern Matching"
+    method = "Pattern Matching"
     if status == discovery.TIMEOUT:
         method += " (timeout)"
     elif status == discovery.VERIFIED:
         method += " (verified)"
     
-    print_tenant_result(tenant_name, tenant_id, domain, method, confidence)
+    print_tenant_result(tenant_name, tenant_id, domain, method)
     return tenant_name
 
 # look up tenant if it's missing
 def lookup_tenant(domain):
-    # Try enhanced discovery first
+    # Try pattern matching first
     if verbose:
-        print(f"INFO: Attempting enhanced tenant discovery for {domain}...")
+        print(f"INFO: Attempting tenant discovery via pattern matching for {domain}...")
     
-    tenant = lookup_tenant_enhanced(domain)
+    tenant = lookup_tenant_by_pattern(domain)
     if tenant:
         return tenant
     
-    # Fall back to legacy autodiscovery method
+    # Fall back to autodiscovery API (deprecated/non-functional as of 2025)
+    if verbose:
+        print(f"INFO: Pattern matching failed, trying autodiscovery API...")
     return lookup_tenant_autodiscovery(domain)
 
 def lookup_tenant_autodiscovery(domain):
