@@ -627,18 +627,20 @@ class TenantDiscovery:
     NO_SHAREPOINT = 'no_sharepoint'  # Other HTTP codes
     ERROR = 'error'                # Unexpected error
     
+    # Timeout constants
+    DEFAULT_TIMEOUT = 8
+    RETRY_TIMEOUT = 15
+    
     def __init__(self, verbose=False):
         self.verbose = verbose
     
     # Public API
     
-    def find_tenant(self, domain):
-        """Find the Azure AD tenant name for a domain."""
-        tenant_name, _ = self.discover_tenant(domain)
-        return tenant_name
-    
     def discover_tenant(self, domain):
-        """Discover tenant name with status. Returns (tenant_name, status) or (None, None)."""
+        """Discover the Azure AD tenant name for a domain.
+        
+        Returns: (tenant_name, status) or (None, None) if not found
+        """
         # Get tenant info from Azure endpoints
         tenant_id = get_tenant_id(domain)
         brand_name = get_tenant_brand_name(domain)
@@ -647,10 +649,10 @@ class TenantDiscovery:
             return (None, None)
         
         # Generate and test patterns
-        patterns = self.generate_patterns(domain, brand_name)
-        result = self.test_all_patterns(patterns, domain)
+        patterns = self._generate_patterns(domain, brand_name)
+        result = self._test_all_patterns(patterns, domain)
         
-        return result[0] if result else (None, None)
+        return result if result else (None, None)
     
     def build_sharepoint_url(self, tenant_name, domain):
         """Build the SharePoint/OneDrive URL for a tenant."""
@@ -660,7 +662,7 @@ class TenantDiscovery:
     
     # Internal Methods
     
-    def generate_patterns(self, domain, brand_name=None):
+    def _generate_patterns(self, domain, brand_name=None):
         """Generate potential tenant name patterns in priority order."""
         patterns = []
         
@@ -677,8 +679,8 @@ class TenantDiscovery:
                 patterns.append(cleaned)
             
             # First word of brand name
-            first_word = brand_name.split()[0]
-            if (cleaned := clean_text(first_word)) and cleaned not in patterns:
+            words = brand_name.split()
+            if words and (cleaned := clean_text(words[0])) and cleaned not in patterns:
                 patterns.append(cleaned)
         
         # Domain-based patterns
@@ -703,19 +705,19 @@ class TenantDiscovery:
         
         return patterns
     
-    def test_all_patterns(self, patterns, domain):
-        """Test all patterns and return first verified match."""
+    def _test_all_patterns(self, patterns, domain):
+        """Test patterns until verified match found. Returns (tenant, status) or None."""
         # First pass: test all patterns with standard timeout
         timeout_patterns = []
         
         for pattern in patterns:
-            status = self.verify_pattern(pattern, domain)
+            status = self._verify_pattern(pattern, domain)
             
             if status == self.VERIFIED:
                 # Found a verified match, return immediately
                 if self.verbose:
                     print(f"DEBUG: Found verified match: {pattern}")
-                return [(pattern, status)]
+                return (pattern, status)
             elif status == self.TIMEOUT:
                 # Save for potential retry
                 timeout_patterns.append(pattern)
@@ -729,15 +731,15 @@ class TenantDiscovery:
         # No verified match found
         if self.verbose:
             print(f"DEBUG: No verified pattern found for {domain}")
-        return []
+        return None
     
-    def verify_pattern(self, pattern, domain, timeout=8):
+    def _verify_pattern(self, pattern, domain, timeout=None):
         """Verify a single pattern and return status."""
         if self.verbose:
             print(f"DEBUG: Testing pattern: {pattern}")
         
         test_url = self._build_test_url(pattern, domain)
-        status = self._check_url(test_url, timeout=timeout)
+        status = self._check_url(test_url, timeout=timeout or self.DEFAULT_TIMEOUT)
         
         # Log result
         if self.verbose:
@@ -752,30 +754,32 @@ class TenantDiscovery:
     
     def _build_test_url(self, pattern, domain):
         """Build SharePoint URL for testing a pattern."""
-        hostname = f'{pattern}-my.sharepoint.com'
-        domain_part = domain.replace('.', '_')
-        return f'https://{hostname}/personal/test_{domain_part}/_layouts/15/onedrive.aspx'
+        # Use the public method to ensure consistency
+        base_url = self.build_sharepoint_url(pattern, domain)
+        # Replace USER with test for verification
+        return base_url.replace('/USER_', '/test_').rstrip('/') + '/_layouts/15/onedrive.aspx'
     
-    def _retry_timeout_patterns(self, patterns, domain, timeout=15):
+    def _retry_timeout_patterns(self, patterns, domain, timeout=None):
         """Retry patterns that timed out with a longer timeout."""
+        timeout = timeout or self.RETRY_TIMEOUT
         if self.verbose:
             print(f"DEBUG: No verified match, retrying {len(patterns)} timeout(s) with {timeout}s timeout...")
         
         for pattern in patterns:
-            status = self.verify_pattern(pattern, domain, timeout=timeout)
+            status = self._verify_pattern(pattern, domain, timeout=timeout)
             if status == self.VERIFIED:
                 if self.verbose:
                     print(f"DEBUG: Retry successful - {pattern} verified!")
-                return [(pattern, status)]
+                return (pattern, status)
             elif self.verbose:
                 print(f"DEBUG: Retry for {pattern}: {status}")
         
-        return []
+        return None
     
-    def _check_url(self, url, timeout=8):
+    def _check_url(self, url, timeout=None):
         """Check if a SharePoint URL exists and return status."""
         try:
-            r = requests.head(url, timeout=timeout, allow_redirects=False)
+            r = requests.head(url, timeout=timeout or self.DEFAULT_TIMEOUT, allow_redirects=False)
             # These status codes indicate the tenant exists
             if r.status_code in [403, 404, 401, 302]:
                 return self.VERIFIED
