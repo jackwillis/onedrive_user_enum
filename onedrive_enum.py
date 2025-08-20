@@ -654,12 +654,6 @@ class TenantDiscovery:
         
         return result if result else (None, None)
     
-    def build_sharepoint_url(self, tenant_name, domain):
-        """Build the SharePoint/OneDrive URL for a tenant."""
-        hostname = f'{tenant_name}-my.sharepoint.com'
-        domain_part = domain.replace('.', '_')
-        return f'https://{hostname}/personal/USER_{domain_part}/'
-    
     # Internal Methods
     
     def _generate_patterns(self, domain, brand_name=None):
@@ -754,10 +748,9 @@ class TenantDiscovery:
     
     def _build_test_url(self, pattern, domain):
         """Build SharePoint URL for testing a pattern."""
-        # Use the public method to ensure consistency
-        base_url = self.build_sharepoint_url(pattern, domain)
-        # Replace USER with test for verification
-        return base_url.replace('/USER_', '/test_').rstrip('/') + '/_layouts/15/onedrive.aspx'
+        hostname = f'{pattern}-my.sharepoint.com'
+        domain_part = domain.replace('.', '_')
+        return f'https://{hostname}/personal/test_{domain_part}/_layouts/15/onedrive.aspx'
     
     def _retry_timeout_patterns(self, patterns, domain, timeout=None):
         """Retry patterns that timed out with a longer timeout."""
