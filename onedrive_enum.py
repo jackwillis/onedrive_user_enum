@@ -659,6 +659,7 @@ class TenantDiscovery:
     def _generate_patterns(self, domain, brand_name=None):
         """Generate potential tenant name patterns in priority order."""
         patterns = []
+        seen = set()
         
         def clean_text(text):
             """Remove non-alphanumeric characters and lowercase"""
@@ -666,36 +667,37 @@ class TenantDiscovery:
                 return ''
             return ''.join(c for c in text.lower() if c.isalnum())
         
+        def add_pattern(pattern):
+            """Add pattern if not seen before"""
+            if pattern and pattern not in seen:
+                patterns.append(pattern)
+                seen.add(pattern)
+        
         # Process brand name if provided (highest priority)
         if brand_name:
             # Full brand name cleaned
-            if cleaned := clean_text(brand_name):
-                patterns.append(cleaned)
+            add_pattern(clean_text(brand_name))
             
             # First word of brand name
             words = brand_name.split()
-            if words and (cleaned := clean_text(words[0])) and cleaned not in patterns:
-                patterns.append(cleaned)
+            if words:
+                add_pattern(clean_text(words[0]))
         
         # Domain-based patterns
         domain_lower = domain.lower()
         domain_prefix = domain_lower.split('.')[0]
         
         # Full domain without dots (e.g., 'example.com' -> 'examplecom')
-        if (cleaned := clean_text(domain_lower)) and cleaned not in patterns:
-            patterns.append(cleaned)
+        add_pattern(clean_text(domain_lower))
         
         # Domain prefix cleaned (e.g., 'ex-ample.com' -> 'example')
         domain_prefix_clean = clean_text(domain_prefix)
-        if domain_prefix_clean and domain_prefix_clean not in patterns:
-            patterns.append(domain_prefix_clean)
+        add_pattern(domain_prefix_clean)
         
         # Common suffixes to try with the domain prefix
         if domain_prefix_clean:
             for suffix in ['365', 'prod', '0', '1']:
-                pattern = f'{domain_prefix_clean}{suffix}'
-                if pattern not in patterns:
-                    patterns.append(pattern)
+                add_pattern(f'{domain_prefix_clean}{suffix}')
         
         return patterns
     
