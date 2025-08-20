@@ -615,7 +615,7 @@ class UrlChecker:
         self.totalcount = nCountText
         self.userdata = tmp_untried_users
 
-# Tenant Discovery - Based on AADInternals by @NestoriSyynimaa
+# Tenant Discovery via SharePoint URL Pattern Testing
 
 class TenantDiscovery:
     """Discover Azure AD tenant names via SharePoint URL pattern testing."""
