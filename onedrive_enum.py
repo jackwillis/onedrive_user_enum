@@ -857,9 +857,12 @@ def print_tenant_result(tenant_name, tenant_id, domain, method="AADInternals Pat
     print(f"https://{tenant_name}-my.sharepoint.com/personal/USER_{domain.replace('.', '_')}/")
     print(f"\n{'+'*106}\n")
 
-def lookup_tenant_by_pattern(domain):
-    """Try to guess tenant name using pattern matching."""
+def lookup_tenant(domain):
+    """Discover tenant name using pattern matching."""
     global verbose
+    
+    if verbose:
+        print(f"INFO: Attempting tenant discovery for {domain}...")
     
     # Try to guess the tenant name
     discovery = TenantDiscovery(verbose=verbose)
@@ -871,7 +874,8 @@ def lookup_tenant_by_pattern(domain):
             brand_name = get_tenant_brand_name(domain)
             if tenant_id or brand_name:
                 print(f"DEBUG: Found tenant info but no working pattern. TenantID: {tenant_id}, Brand: {brand_name}")
-        return None
+        print("No tenants found. Exiting.")
+        exit()
     
     # Get tenant ID for display (we know it exists since discovery succeeded)
     tenant_id = get_tenant_id(domain)
@@ -886,118 +890,6 @@ def lookup_tenant_by_pattern(domain):
     print_tenant_result(tenant_name, tenant_id, domain, method)
     return tenant_name
 
-# look up tenant if it's missing
-def lookup_tenant(domain):
-    # Try pattern matching first
-    if verbose:
-        print(f"INFO: Attempting tenant discovery via pattern matching for {domain}...")
-    
-    tenant = lookup_tenant_by_pattern(domain)
-    if tenant:
-        return tenant
-    
-    # Fall back to autodiscovery API (deprecated/non-functional as of 2025)
-    if verbose:
-        print(f"INFO: Pattern matching failed, trying autodiscovery API...")
-    return lookup_tenant_autodiscovery(domain)
-
-def lookup_tenant_autodiscovery(domain):
-    #identify primary tenant(s)
-    # will always display list of alternate tenants
-    # this will pick one based on mail.onmicrosoft.com record, or failing that, matching domain that was given.
-
-    def resolve_hostname(hostname):
-        try:
-            return socket.gethostbyname(hostname)
-        except socket.gaierror:
-            return None
-
-    # this lookup trick is from AADInternals and TREVORspray
-    url = f'https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc'
-    headers = { 'Content-Type': 'text/xml; charset=utf-8',
-            'SOAPAction': '"http://schemas.microsoft.com/exchange/2010/Autodiscover/Autodiscover/GetFederationInformation"',
-            'User-Agent' : 'AutodiscoverClient',
-            'Accept-Encoding' : 'identity'
-    }
-    xml = f'<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:exm="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:ext="http://schemas.microsoft.com/exchange/services/2006/types" xmlns:a="http://www.w3.org/2005/08/addressing" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"><soap:Header><a:Action soap:mustUnderstand="1">http://schemas.microsoft.com/exchange/2010/Autodiscover/Autodiscover/GetFederationInformation</a:Action><a:To soap:mustUnderstand="1">https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc</a:To><a:ReplyTo><a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address></a:ReplyTo></soap:Header><soap:Body><GetFederationInformationRequestMessage xmlns="http://schemas.microsoft.com/exchange/2010/Autodiscover"><Request><Domain>{domain}</Domain></Request></GetFederationInformationRequestMessage></soap:Body></soap:Envelope>'
-    #print(xml)
-
-    tenant_list = []
-    mail_list = []
-    onedrive_list = []
-
-    try:
-        r = requests.post(url, data=xml, headers=headers, timeout=8.0)
-        domain_extract = re.findall('<Domain>(.*?)</Domain>', r.content.decode('utf-8'))
-        tenant_extract = [i for i, x in enumerate(domain_extract) if ".onmicrosoft.com" in x and ".mail.onmicrosoft.com" not in x] # this line gets the matching list item numbers only
-        if ( len(tenant_extract) > 0):
-            print(f"\nTenants Identified:\n---------------------")
-            for found_tenant in tenant_extract:
-                cleaned_tenant = (domain_extract[found_tenant]).replace('.onmicrosoft.com','').lower()
-                print(f'{cleaned_tenant}')
-                tenant_list.append(cleaned_tenant)
-            print("")
-        else:
-            print("No tenants found. Exiting.")
-            exit()
-
-        mail_extract = [i for i, x in enumerate(domain_extract) if ".mail.onmicrosoft.com" in x] # this line gets the matching list item numbers only
-        if ( len(mail_extract) > 0):
-            if verbose:
-                print(f"\nMail records identified:\n---------------------")
-            for found_tenant in mail_extract:
-                cleaned_mail = (domain_extract[found_tenant]).replace('.mail.onmicrosoft.com','').lower()
-                if verbose:
-                    print(f'{cleaned_mail}')
-                mail_list.append(cleaned_mail)
-
-        for test_tenant in tenant_list:
-            test_hostname = f'{test_tenant}-my.sharepoint.com'
-            if verbose:
-                print(f"Testing {test_hostname}")
-            if resolve_hostname(test_hostname):
-                onedrive_list.append(test_tenant)
-        #print(onedrive_list)
-        if ( len(onedrive_list) > 0 ):
-            print(f"OneDrive hosts found:\n---------------------")
-            for onedrive_host in onedrive_list:
-                print(f"{onedrive_host}-my.sharepoint.com")
-            print("\n")
-            if len(onedrive_list) == 1:
-                tenantname = onedrive_list[0]
-            else:       #list is longer than 1, so iterated
-                # we want to see if any of our onedrive URLs match the mail server address
-                #matching_mail =  (any(item in onedrive_list for item in mail_list)):
-                matching_mail =  list(set(onedrive_list) & set(mail_list))
-                if matching_mail:
-                    if verbose:
-                        print("INFO: Found matching mail record shared with onedrive URL. This is probably it. If you do not get results, re-run and manually choose a different tenant")
-                    #print(matching_mail)
-                    tenantname = matching_mail[0]
-                else:
-                    print("Could not reliably determine the primary domain. Try specifying different ones using the '-t' flag until you find it.")
-                    for tenant in tenant_list:
-                        print(f"{tenant}")
-            #print("--------------------------------------------------------------------------------------------------------")
-            print(f"++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n")
-
-            if verbose:
-                print(f"INFO: Tenant name has been set to: {tenantname}")
-            return tenantname
-
-        else:
-            print(f"ERROR: NO ONEDRIVE DETECTED!")
-            exit()
-    except requests.exceptions.HTTPError as errh:
-        print ("Http Error:",errh)
-    except requests.exceptions.ConnectionError as errc:
-        print ("Error Connecting:",errc)
-    except requests.exceptions.Timeout as errt:
-        print ("Timeout Error:",errt)
-    except requests.exceptions.RequestException as err:
-        print ("OOps: Something Else",err)
-    
-    return None
 
 # handle ctrl-c with log file
 # stole from https://stackoverflow.com/questions/1112343/how-do-i-capture-sigint-in-python
