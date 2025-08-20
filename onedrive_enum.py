@@ -631,8 +631,9 @@ class TenantDiscovery:
     DEFAULT_TIMEOUT = 8
     RETRY_TIMEOUT = 15
     
-    def __init__(self, verbose=False):
+    def __init__(self, verbose=False, endpoint='sharepoint.com'):
         self.verbose = verbose
+        self.endpoint = endpoint
     
     # Public API
     
@@ -703,9 +704,9 @@ class TenantDiscovery:
     
     def _test_all_patterns(self, patterns, domain):
         """Test patterns until verified match found. Returns (tenant, status) or None."""
-        # First pass: test all patterns with standard timeout
         timeout_patterns = []
         
+        # First pass: test all patterns with standard timeout
         for pattern in patterns:
             status = self._verify_pattern(pattern, domain)
             
@@ -750,7 +751,7 @@ class TenantDiscovery:
     
     def _build_test_url(self, pattern, domain):
         """Build SharePoint URL for testing a pattern."""
-        hostname = f'{pattern}-my.sharepoint.com'
+        hostname = f'{pattern}-my.{self.endpoint}'
         domain_part = domain.replace('.', '_')
         return f'https://{hostname}/personal/test_{domain_part}/_layouts/15/onedrive.aspx'
     
@@ -847,13 +848,13 @@ def get_tenant_brand_name(domain):
 
 def lookup_tenant(domain):
     """Discover tenant name using pattern matching."""
-    global verbose
+    global verbose, endpoint
     
     if verbose:
         print(f"INFO: Attempting tenant discovery for {domain}...")
     
     # Try to guess the tenant name
-    discovery = TenantDiscovery(verbose=verbose)
+    discovery = TenantDiscovery(verbose=verbose, endpoint=endpoint)
     tenant_name, status = discovery.discover_tenant(domain)
     
     if not tenant_name:
@@ -881,8 +882,6 @@ def lookup_tenant(domain):
         print(f"Tenant ID: {tenant_id}")
     print(f"Tenant Name (discovered): {tenant_name}")
     print(f"Discovery Method: {method}")
-    print(f"\nOneDrive URL to test:\n---------------------")
-    print(f"https://{tenant_name}-my.sharepoint.com/personal/USER_{domain.replace('.', '_')}/")
     print(f"\n{'+'*106}\n")
     
     return tenant_name
