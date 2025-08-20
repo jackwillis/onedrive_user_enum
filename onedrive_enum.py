@@ -850,17 +850,6 @@ def get_tenant_brand_name(domain):
     return None
 
 
-def print_tenant_result(tenant_name, tenant_id, domain, method="AADInternals Pattern Matching"):
-    """Print tenant discovery results"""
-    print(f"\nTenant Discovery Results:\n---------------------")
-    if tenant_id:
-        print(f"Tenant ID: {tenant_id}")
-    print(f"Tenant Name (discovered): {tenant_name}")
-    print(f"Discovery Method: {method}")
-    print(f"\nOneDrive URL to test:\n---------------------")
-    print(f"https://{tenant_name}-my.sharepoint.com/personal/USER_{domain.replace('.', '_')}/")
-    print(f"\n{'+'*106}\n")
-
 def lookup_tenant(domain):
     """Discover tenant name using pattern matching."""
     global verbose
@@ -891,7 +880,16 @@ def lookup_tenant(domain):
     elif status == discovery.VERIFIED:
         method += " (verified)"
     
-    print_tenant_result(tenant_name, tenant_id, domain, method)
+    # Print discovery results
+    print(f"\nTenant Discovery Results:\n---------------------")
+    if tenant_id:
+        print(f"Tenant ID: {tenant_id}")
+    print(f"Tenant Name (discovered): {tenant_name}")
+    print(f"Discovery Method: {method}")
+    print(f"\nOneDrive URL to test:\n---------------------")
+    print(f"https://{tenant_name}-my.sharepoint.com/personal/USER_{domain.replace('.', '_')}/")
+    print(f"\n{'+'*106}\n")
+    
     return tenant_name
 
 
