@@ -615,14 +615,18 @@ class UrlChecker:
         self.totalcount = nCountText
         self.userdata = tmp_untried_users
 
-# Tenant Discovery via SharePoint URL Pattern Testing
-
 class TenantDiscovery:
-    """Discover Azure AD tenant names via SharePoint URL pattern testing."""
+    """Discover Azure AD tenant names via SharePoint URL pattern testing.
+    
+    This class attempts to discover the Office 365 tenant name for a given domain by:
+    1. Generating potential tenant name patterns based on domain and brand name
+    2. Testing each pattern against SharePoint URLs to see if the tenant exists
+    3. Verifying ownership by confirming the tenant ID matches via OpenID configuration
+    """
     
     # Status constants
-    VERIFIED = 'verified'          # HTTP 403/404/401/302 confirmed
-    TIMEOUT = 'timeout'            # DNS exists but slow/timeout
+    VERIFIED = 'verified'          # SharePoint exists AND ownership verified via OpenID
+    TIMEOUT = 'timeout'            # DNS exists but slow/timeout  
     DNS_FAIL = 'dns_fail'          # DNS doesn't resolve
     NO_SHAREPOINT = 'no_sharepoint'  # Other HTTP codes
     ERROR = 'error'                # Unexpected error
@@ -632,10 +636,14 @@ class TenantDiscovery:
     RETRY_TIMEOUT = 15
     
     def __init__(self, verbose=False, endpoint='sharepoint.com'):
+        """Initialize the TenantDiscovery instance.
+        
+        Args:
+            verbose: Enable debug output
+            endpoint: SharePoint endpoint to test against (default: sharepoint.com)
+        """
         self.verbose = verbose
         self.endpoint = endpoint
-    
-    # Public API
     
     def discover_tenant(self, domain, tenant_id=None, brand_name=None):
         """Discover the Azure AD tenant name for a domain.
@@ -646,6 +654,7 @@ class TenantDiscovery:
             brand_name: Optional pre-fetched brand name (will lookup if not provided)
         
         Returns: (tenant_name, status) or (None, None) if not found
+                 Status is 'verified' only if both SharePoint exists AND ownership is confirmed
         """
         # Get tenant info from Azure endpoints if not provided
         if tenant_id is None:
@@ -658,11 +667,11 @@ class TenantDiscovery:
         
         # Generate and test patterns
         patterns = self._generate_patterns(domain, brand_name)
-        result = self._test_all_patterns(patterns, domain)
+        result = self._test_all_patterns(patterns, domain, tenant_id)
         
         return result if result else (None, None)
     
-    # Internal Methods
+    # Pattern Generation
     
     def _generate_patterns(self, domain, brand_name=None):
         """Generate potential tenant name patterns in priority order."""
@@ -709,75 +718,120 @@ class TenantDiscovery:
         
         return patterns
     
-    def _test_all_patterns(self, patterns, domain):
-        """Test patterns until verified match found. Returns (tenant, status) or None."""
+    def _test_all_patterns(self, patterns, domain, tenant_id=None):
+        """Test patterns until verified match found. Returns (tenant, status) or None.
+        
+        A pattern is considered 'verified' only if:
+        1. SharePoint URL confirms the tenant exists (403/404/401/302)
+        2. OpenID configuration confirms the tenant belongs to the domain's tenant ID
+        """
         timeout_patterns = []
         
         # First pass: test all patterns with standard timeout
         for pattern in patterns:
-            status = self._verify_pattern(pattern, domain)
-            
-            if status == self.VERIFIED:
-                # Found a verified match, return immediately
-                if self.verbose:
-                    print(f"DEBUG: Found verified match: {pattern}")
-                return (pattern, status)
-            elif status == self.TIMEOUT:
-                # Save for potential retry
-                timeout_patterns.append(pattern)
-                if self.verbose:
-                    print(f"DEBUG: {pattern} timed out (will retry if no verified match)")
+            result = self._test_single_pattern(pattern, domain, tenant_id)
+            if result:
+                _, verification_type = result
+                if verification_type == 'verified':
+                    return (pattern, self.VERIFIED)
+                elif verification_type == 'timeout':
+                    timeout_patterns.append(pattern)
+                # Ignore unverified patterns - we only return verified ones
         
         # Second pass: retry timeouts with longer timeout
         if timeout_patterns:
-            return self._retry_timeout_patterns(timeout_patterns, domain)
+            result = self._retry_timeout_patterns(timeout_patterns, domain, tenant_id)
+            if result:
+                return result
         
-        # No verified match found
-        if self.verbose:
-            print(f"DEBUG: No verified pattern found for {domain}")
+        self._log(f"No verified pattern found for {domain}")
         return None
     
+    # Pattern Testing
+    
+    def _test_single_pattern(self, pattern, domain, tenant_id):
+        """Test a single pattern and categorize the result.
+        
+        Returns: (status, verification_type) where verification_type is:
+            - 'verified': Pattern exists and ownership confirmed
+            - 'unverified': Pattern exists but ownership not confirmed  
+            - 'timeout': Pattern timed out
+            - None: Pattern doesn't exist
+        """
+        status = self._verify_pattern(pattern, domain)
+        
+        if status != self.VERIFIED:
+            if status == self.TIMEOUT:
+                self._log(f"{pattern} timed out (will retry if no verified match)")
+                return (status, 'timeout')
+            return None
+        
+        # Pattern exists in SharePoint - verify ownership if possible
+        if not tenant_id:
+            self._log(f"Pattern {pattern} exists (no tenant ID for ownership check)")
+            return (status, 'unverified')
+        
+        ownership = self._verify_tenant_ownership(pattern, tenant_id)
+        
+        if ownership is True:
+            self._log(f"Found verified and owned match: {pattern}")
+            return (status, 'verified')
+        elif ownership is False:
+            self._log(f"Pattern {pattern} exists but belongs to different tenant")
+            return (status, 'unverified')
+        else:
+            self._log(f"Pattern {pattern} exists but ownership unverified")
+            return (status, 'unverified')
+    
     def _verify_pattern(self, pattern, domain, timeout=None):
-        """Verify a single pattern and return status."""
-        if self.verbose:
-            print(f"DEBUG: Testing pattern: {pattern}")
+        """Verify if a pattern exists by testing SharePoint URL."""
+        self._log(f"Testing pattern: {pattern}")
         
         test_url = self._build_test_url(pattern, domain)
         status = self._check_url(test_url, timeout=timeout or self.DEFAULT_TIMEOUT)
         
         # Log result
-        if self.verbose:
-            if status == self.VERIFIED:
-                print(f"DEBUG: {pattern} verified")
-            elif status == self.TIMEOUT:
-                print(f"DEBUG: {pattern} timeout")
-            else:
-                print(f"DEBUG: {pattern} failed ({status})")
+        status_messages = {
+            self.VERIFIED: f"{pattern} verified",
+            self.TIMEOUT: f"{pattern} timeout",
+        }
+        message = status_messages.get(status, f"{pattern} failed ({status})")
+        self._log(message)
         
         return status
+    
+    def _retry_timeout_patterns(self, patterns, domain, tenant_id=None, timeout=None):
+        """Retry patterns that timed out with a longer timeout."""
+        timeout = timeout or self.RETRY_TIMEOUT
+        self._log(f"No verified match, retrying {len(patterns)} timeout(s) with {timeout}s timeout...")
+        
+        for pattern in patterns:
+            status = self._verify_pattern(pattern, domain, timeout=timeout)
+            if status != self.VERIFIED:
+                self._log(f"Retry for {pattern}: {status}")
+                continue
+            
+            # Pattern exists - check ownership
+            if not tenant_id:
+                self._log(f"Retry for {pattern}: exists but no tenant ID")
+                return (pattern, self.TIMEOUT)
+            
+            ownership = self._verify_tenant_ownership(pattern, tenant_id)
+            if ownership is True:
+                self._log(f"Retry successful - {pattern} verified and owned!")
+                return (pattern, self.VERIFIED)
+            else:
+                self._log(f"Retry for {pattern}: exists but ownership issue")
+        
+        return None
+    
+    # SharePoint URL Verification
     
     def _build_test_url(self, pattern, domain):
         """Build SharePoint URL for testing a pattern."""
         hostname = f'{pattern}-my.{self.endpoint}'
         domain_part = domain.replace('.', '_')
         return f'https://{hostname}/personal/test_{domain_part}/_layouts/15/onedrive.aspx'
-    
-    def _retry_timeout_patterns(self, patterns, domain, timeout=None):
-        """Retry patterns that timed out with a longer timeout."""
-        timeout = timeout or self.RETRY_TIMEOUT
-        if self.verbose:
-            print(f"DEBUG: No verified match, retrying {len(patterns)} timeout(s) with {timeout}s timeout...")
-        
-        for pattern in patterns:
-            status = self._verify_pattern(pattern, domain, timeout=timeout)
-            if status == self.VERIFIED:
-                if self.verbose:
-                    print(f"DEBUG: Retry successful - {pattern} verified!")
-                return (pattern, status)
-            elif self.verbose:
-                print(f"DEBUG: Retry for {pattern}: {status}")
-        
-        return None
     
     def _check_url(self, url, timeout=None):
         """Check if a SharePoint URL exists and return status."""
@@ -796,6 +850,69 @@ class TenantDiscovery:
             return self.ERROR
         except Exception:
             return self.ERROR
+    
+    # Ownership Verification via OpenID
+    
+    def _verify_tenant_ownership(self, tenant_name, tenant_id):
+        """Verify that a tenant name belongs to the given tenant ID using OpenID Configuration.
+        
+        Args:
+            tenant_name: The tenant name to verify (without .onmicrosoft.com)
+            tenant_id: The expected tenant ID (GUID)
+            
+        Returns:
+            True if tenant name belongs to tenant ID
+            False if tenant name exists but belongs to different tenant
+            None if unable to verify (network error, tenant doesn't exist, etc.)
+        """
+        if not tenant_name or not tenant_id:
+            return None
+        
+        url = f"https://login.microsoftonline.com/{tenant_name}.onmicrosoft.com/v2.0/.well-known/openid-configuration"
+        self._log(f"Verifying tenant ownership via OpenID: {tenant_name} -> {tenant_id}")
+        
+        try:
+            response = requests.get(url, timeout=self.DEFAULT_TIMEOUT)
+            if response.status_code != 200:
+                return None
+            
+            extracted_id = self._extract_tenant_id_from_issuer(response.json())
+            if extracted_id:
+                self._log(f"OpenID issuer tenant ID: {extracted_id}")
+                return extracted_id.lower() == tenant_id.lower()
+            
+            return None
+            
+        except requests.exceptions.Timeout:
+            self._log(f"OpenID verification timeout for {tenant_name}")
+            return None
+        except Exception as e:
+            self._log(f"OpenID verification error for {tenant_name}: {e}")
+            return None
+    
+    def _extract_tenant_id_from_issuer(self, openid_config):
+        """Extract tenant ID from OpenID configuration issuer URL.
+        
+        Args:
+            openid_config: OpenID configuration JSON
+            
+        Returns:
+            Tenant ID string or None if not found
+        """
+        issuer = openid_config.get('issuer', '')
+        # Format: https://login.microsoftonline.com/{tenant_id}/v2.0
+        if '/v2.0' in issuer:
+            parts = issuer.split('/')
+            if len(parts) >= 2:
+                return parts[-2]
+        return None
+    
+    # Utility Methods
+    
+    def _log(self, message):
+        """Centralized logging for verbose output."""
+        if self.verbose:
+            print(f"DEBUG: {message}")
 
 def get_tenant_id(domain):
     """Get Tenant ID using Office Apps Live endpoint
